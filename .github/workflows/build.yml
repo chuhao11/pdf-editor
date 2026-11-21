@@ -1,0 +1,108 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q -W ignore::DeprecationWarning
+
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = python -c "import pdfeditor; print(pdfeditor.__version__)"
+          if ("${{ github.ref_type }}" -eq "tag") { $v = "${{ github.ref_name }}".TrimStart("v") }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build with PyInstaller
+        run: pyinstaller packaging/pdfeditor.spec --noconfirm --distpath dist --workpath build
+
+      - name: Self-test the packaged exe
+        shell: pwsh
+        run: |
+          function Invoke-SelfTest($exe) {
+            $out = Join-Path $env:RUNNER_TEMP ("selftest-" + [guid]::NewGuid() + ".txt")
+            $p = Start-Process -FilePath $exe -ArgumentList @("--selftest", $out) -PassThru
+            $null = $p.Handle
+            if (-not $p.WaitForExit(180000)) { $p.Kill(); throw "self-test timed out" }
+            if (Test-Path $out) { Get-Content $out -Encoding UTF8 }
+            if ($p.ExitCode -ne 0) { throw "self-test failed with exit code $($p.ExitCode)" }
+          }
+          Invoke-SelfTest (Resolve-Path "dist\PDFEditor\PDFEditor.exe")
+          "{0:N1} MB" -f ((Get-ChildItem dist\PDFEditor -Recurse | Measure-Object Length -Sum).Sum / 1MB)
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco upgrade innosetup -y --no-progress | Out-Null
+          $iscc = Get-ChildItem "C:\Program Files*\Inno Setup *\ISCC.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          Write-Host "Using $($iscc.FullName)"
+          & $iscc.FullName "/DAppVersion=${{ steps.ver.outputs.version }}" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: Test installer
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath (Resolve-Path "dist\PDFEditor-Setup.exe") -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer failed with exit code $($p.ExitCode)" }
+          $exe = Join-Path $env:LOCALAPPDATA "Programs\PDFEditor\PDFEditor.exe"
+          if (-not (Test-Path $exe)) { throw "not installed at $exe" }
+          $out = Join-Path $env:RUNNER_TEMP "selftest-installed.txt"
+          $t = Start-Process -FilePath $exe -ArgumentList @("--selftest", $out) -PassThru
+          $null = $t.Handle
+          if (-not $t.WaitForExit(180000)) { $t.Kill(); throw "installed self-test timed out" }
+          Get-Content $out -Encoding UTF8
+          if ($t.ExitCode -ne 0) { throw "installed self-test failed" }
+
+      - name: Zip portable version
+        shell: pwsh
+        run: Compress-Archive -Path dist\PDFEditor\* -DestinationPath dist\PDFEditor-Portable.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: PDFEditor-${{ steps.ver.outputs.version }}
+          path: |
+            dist/PDFEditor-Setup.exe
+            dist/PDFEditor-Portable.zip
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release create $tag `
+            "dist\PDFEditor-Setup.exe#PDF 编辑器 安装版（推荐）" `
+            "dist\PDFEditor-Portable.zip#PDF 编辑器 便携版（免安装，解压即用）" `
+            --title "PDF 编辑器 $tag" --notes-file packaging/release-notes.md

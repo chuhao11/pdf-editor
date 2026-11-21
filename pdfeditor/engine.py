@@ -12,6 +12,7 @@ import itertools
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -332,7 +333,15 @@ def save_pdf(pages: list[PageRef], path: str) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        for attempt in range(6):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                # Windows 上杀毒软件或索引服务可能短暂占用文件，稍等重试
+                if attempt == 5:
+                    raise
+                time.sleep(0.3)
     except BaseException:
         try:
             os.remove(tmp)

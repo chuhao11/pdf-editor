@@ -38,7 +38,8 @@ RestartApplications=no
 #if FileExists(ChsIsl)
 Name: "chs"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 #else
-Name: "en"; MessagesFile: "compiler:Default.isl"
+; Inno Setup 6 没有自带简体中文，用仓库里附带的翻译（来自 Inno Setup 官方仓库）
+Name: "chs"; MessagesFile: "ChineseSimplified.isl"
 #endif
 
 [Tasks]

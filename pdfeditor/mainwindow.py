@@ -9,7 +9,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -157,6 +157,7 @@ class WelcomePage(QWidget):
                                ("图片转 PDF", "image", win.images_to_pdf_dialog),
                                ("新建空白文档", "new", win.new_blank)):
             b = QPushButton(icon(ic), "  " + text)
+            win.themed.append((b, ic))
             b.setIconSize(QSize(20, 20))
             b.setMinimumHeight(38)
             b.setMinimumWidth(140)
@@ -175,6 +176,7 @@ class MainWindow(QMainWindow):
         self.sources: list[SourceDoc] = []
         self.clipboard: list = []
         self._untitled = itertools.count(1)
+        self.themed: list = []  # (动作或按钮, 图标名)：切换浅色/深色时重新上色
         self.setWindowIcon(app_icon())
         self.setAcceptDrops(True)
         self._build_actions()
@@ -190,6 +192,7 @@ class MainWindow(QMainWindow):
         a = QAction(text, self)
         if ic:
             a.setIcon(icon(ic))
+            self.themed.append((a, ic))
         if shortcut:
             if isinstance(shortcut, (list, tuple)):
                 a.setShortcuts([QKeySequence(s) for s in shortcut])
@@ -268,6 +271,7 @@ class MainWindow(QMainWindow):
         self.tabbar.customContextMenuRequested.connect(self._tab_menu)
         self.plus_btn = QToolButton()
         self.plus_btn.setIcon(icon("plus"))
+        self.themed.append((self.plus_btn, "plus"))
         self.plus_btn.setAutoRaise(True)
         self.plus_btn.setToolTip("打开 PDF 或图片")
         self.plus_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
@@ -878,6 +882,15 @@ class MainWindow(QMainWindow):
         else:
             self.page_label.setText("")
             self.setWindowTitle(APP_NAME)
+
+    def changeEvent(self, e):
+        if e.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange, QEvent.Type.ThemeChange):
+            QTimer.singleShot(0, self._refresh_icons)
+        super().changeEvent(e)
+
+    def _refresh_icons(self):
+        for w, name in self.themed:
+            w.setIcon(icon(name))
 
     # ================================================================ 退出
     def closeEvent(self, e):
